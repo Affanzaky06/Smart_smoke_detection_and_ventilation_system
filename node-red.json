@@ -1,0 +1,2175 @@
+[
+    {
+        "id": "0f96f0a0cac21be3",
+        "type": "tab",
+        "label": "Dashboard Smoke",
+        "disabled": false,
+        "info": "Alur utama: terima data MQTT dari ESP32, tampilkan di dashboard, kirim perintah kontrol.",
+        "env": []
+    },
+    {
+        "id": "2f44b11b7058fdba",
+        "type": "group",
+        "z": "0f96f0a0cac21be3",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#767676"
+        },
+        "nodes": [
+            "aad598a225f12795"
+        ],
+        "x": 1134,
+        "y": 1119,
+        "w": 172,
+        "h": 82
+    },
+    {
+        "id": "fb05c025ea421987",
+        "type": "mqtt in",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "topic": "smoke/room1/sensor",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "mqtt_broker",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 300,
+        "y": 740,
+        "wires": [
+            [
+                "fd5616f00f445149",
+                "154e2f7c6ec3ae99",
+                "fbc31233634da581",
+                "a28fc895f11c5635"
+            ]
+        ]
+    },
+    {
+        "id": "b7e5346ce201df1d",
+        "type": "mqtt in",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "topic": "smoke/room1/status",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "mqtt_broker",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 290,
+        "y": 820,
+        "wires": [
+            [
+                "fd5616f00f445149",
+                "9c44c99254a9a410",
+                "a28fc895f11c5635"
+            ]
+        ]
+    },
+    {
+        "id": "7bd3e62cb77d13fc",
+        "type": "mqtt in",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "topic": "smoke/room1/online",
+        "qos": "0",
+        "datatype": "auto-detect",
+        "broker": "mqtt_broker",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 310,
+        "y": 660,
+        "wires": [
+            [
+                "fd5616f00f445149",
+                "a28fc895f11c5635"
+            ]
+        ]
+    },
+    {
+        "id": "4d72d30825b85c2d",
+        "type": "mqtt out",
+        "z": "0f96f0a0cac21be3",
+        "name": "Perintah kontrol",
+        "topic": "smoke/room1/control",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "mqtt_broker",
+        "x": 1980,
+        "y": 440,
+        "wires": []
+    },
+    {
+        "id": "fd5616f00f445149",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Proses pesan MQTT",
+        "func": "\n// ============================================\n// PROSES PESAN MQTT\n// Smart Smoke Detection & Air Ventilation\n// Metode: ADC DELTA terhadap baseline\n// 10 OUTPUT\n// ============================================\n\nconst T = String(msg.topic || '');\n\nfunction num(v) {\n  if (v === null || v === undefined || v === '') return null;\n  const n = Number(v);\n  return Number.isFinite(n) ? n : null;\n}\n\nfunction toBool(v) {\n  return v === true || v === 1 ||\n    String(v).toLowerCase() === 'true' ||\n    String(v) === '1' ||\n    String(v).toLowerCase() === 'on';\n}\n\nconst p2 = n => String(n).padStart(2, '0');\nconst now = new Date();\n\nconst hhmm =\n  p2(now.getHours()) + ':' +\n  p2(now.getMinutes()) + ':' +\n  p2(now.getSeconds());\n\n// ============================================\n// STATUS DASHBOARD DAN LOG\n// ============================================\n\nlet last = flow.get('last') || {\n  status: null,\n  ket: '',\n  fan: 0,\n  fan1: 0,\n  fan2: 0,\n  fan3: 0,\n  fan4: 0,\n  buzzer: 0,\n  servo1: 0,\n  servo2: 0,\n  mode: 'AUTO',\n  flame: 0,\n  online: null\n};\n\nlet log = flow.get('log') || [];\nlet logChanged = false;\n\nconst out = [\n  null, null, null, null, null,\n  null, null, null, null, null\n];\n\nfunction addLog(status, ket) {\n  log.unshift({\n    time: hhmm,\n    status: status,\n    ket: ket\n  });\n\n  if (log.length > 8) {\n    log.length = 8;\n  }\n\n  logChanged = true;\n}\n\nconst statusText = {\n  AMAN: 'Kondisi normal',\n  WASPADA: 'Indikasi perubahan kualitas udara',\n  BAHAYA: 'Bahaya terdeteksi'\n};\n\n// ============================================\n// A. DATA SENSOR\n// ============================================\n\nif (T.endsWith('/sensor')) {\n\n  const d = msg.payload;\n\n  if (!d || typeof d !== 'object') return null;\n\n  const smoke = num(d.smoke);\n  const air = num(d.air);\n  const co = num(d.co);\n\n  const bs = num(d.bs);\n  const ba = num(d.ba);\n  const bc = num(d.bc);\n\n  // Data ADC dan baseline harus lengkap\n  if (\n    [smoke, air, co, bs, ba, bc]\n      .some(v => v === null)\n  ) {\n    return null;\n  }\n\n  // ========================================\n  // HITUNG ADC DELTA\n  // ========================================\n\n  const smokeDelta = smoke - bs;\n  const airDelta = air - ba;\n  const coDelta = co - bc;\n\n  const temp = num(d.temp);\n  const hum = num(d.hum);\n\n  // ========================================\n  // OUTPUT 1: GAUGE MQ-2\n  // ========================================\n\n  out[0] = {\n    payload: smokeDelta\n  };\n\n  // ========================================\n  // OUTPUT 2: GAUGE MQ-135\n  // ========================================\n\n  out[1] = {\n    payload: airDelta\n  };\n\n  // ========================================\n  // OUTPUT 3: GAUGE MQ-7\n  // ========================================\n\n  out[2] = {\n    payload: coDelta\n  };\n\n  // ========================================\n  // OUTPUT 4: GAUGE SUHU\n  // ========================================\n\n  if (temp !== null) {\n    out[3] = {\n      payload: temp\n    };\n  }\n\n  // ========================================\n  // OUTPUT 5: GAUGE KELEMBAPAN\n  // ========================================\n\n  if (hum !== null) {\n    out[4] = {\n      payload: hum\n    };\n  }\n\n  // ========================================\n  // OUTPUT 6: GRAFIK GAS\n  // ========================================\n\n  out[5] = [\n    {\n      topic: 'MQ-2 Delta ADC',\n      payload: smokeDelta\n    },\n    {\n      topic: 'MQ-135 Delta ADC',\n      payload: airDelta\n    },\n    {\n      topic: 'MQ-7 Delta ADC',\n      payload: coDelta\n    }\n  ];\n\n  // ========================================\n  // OUTPUT 7: GRAFIK SUHU DAN KELEMBAPAN\n  // ========================================\n\n  const th = [];\n\n  if (temp !== null) {\n    th.push({\n      topic: 'Suhu (°C)',\n      payload: temp\n    });\n  }\n\n  if (hum !== null) {\n    th.push({\n      topic: 'Kelembapan (%)',\n      payload: hum\n    });\n  }\n\n  if (th.length > 0) {\n    out[6] = th;\n  }\n\n  // ========================================\n  // UPDATE STATUS API UNTUK DASHBOARD\n  // ========================================\n\n  last.flame = toBool(d.flame) ? 1 : 0;\n\n  // Simpan nilai sensor terakhir\n  last.smokeDelta = smokeDelta;\n  last.airDelta = airDelta;\n  last.coDelta = coDelta;\n\n  // ========================================\n  // OUTPUT 10: DATA KE DATABASE\n  // ========================================\n\n  out[9] = {\n    topic: msg.topic,\n\n    payload: {\n      ...d,\n\n      // Nilai ADC delta\n      smoke_delta: smokeDelta,\n      air_delta: airDelta,\n      co_delta: coDelta,\n\n      // PPM dan indeks belum digunakan\n      smoke_ppm: null,\n      air_index: null,\n      co_ppm: null,\n      co_index: null,\n\n      // Metode pengolahan\n      detection_method: 'ADC_DELTA',\n      threshold_version: 'ADC_DELTA_V1',\n\n      // Nama kolom yang digunakan database\n      suhu: temp,\n      kelembapan: hum\n    }\n  };\n}\n\n// ============================================\n// B. DATA STATUS AKTUATOR\n// ============================================\n\nelse if (T.endsWith('/status')) {\n\n  const s = msg.payload;\n\n  if (!s || typeof s !== 'object') return null;\n\n  if (s.status && s.status !== last.status) {\n    addLog(\n      s.status,\n      statusText[s.status] || ''\n    );\n  }\n\n  last.status = s.status || last.status;\n\n  last.ket = statusText[last.status] || '';\n\n  last.fan1 = toBool(s.fan1) ? 1 : 0;\n  last.fan2 = toBool(s.fan2) ? 1 : 0;\n  last.fan3 = toBool(s.fan3) ? 1 : 0;\n  last.fan4 = toBool(s.fan4) ? 1 : 0;\n\n  last.fan = (\n    last.fan1 ||\n    last.fan2 ||\n    last.fan3 ||\n    last.fan4\n  ) ? 1 : 0;\n\n  last.buzzer = toBool(s.buzzer) ? 1 : 0;\n\n  // Posisi servo dibaca dari status aktual ESP32\n  last.servo1 = toBool(s.servo1) ? 1 : 0;\n  last.servo2 = toBool(s.servo2) ? 1 : 0;\n\n  last.mode = s.mode || last.mode;\n}\n\n// ============================================\n// C. STATUS ONLINE ESP32\n// ============================================\n\nelse if (T.endsWith('/online')) {\n\n  const on =\n    String(msg.payload).toLowerCase() === 'online';\n\n  if (last.online !== null && last.online !== on) {\n\n    addLog(\n      on ? 'AMAN' : 'OFFLINE',\n      on\n        ? 'Perangkat online kembali'\n        : 'Perangkat offline'\n    );\n  }\n\n  last.online = on;\n}\n\n// Topic tidak dikenal\nelse {\n  return null;\n}\n\n// ============================================\n// OUTPUT 8: PANEL STATUS\n// ============================================\n\nflow.set('last', last);\nflow.set('log', log);\n\nout[7] = {\n  payload: Object.assign({}, last, {\n    servo: (last.servo1 || last.servo2)\n      ? 'BUKA'\n      : 'TUTUP',\n    time: hhmm\n  })\n};\n\n// ============================================\n// OUTPUT 9: EVENT LOG\n// ============================================\n\nif (logChanged) {\n  out[8] = {\n    payload: log\n  };\n}\n\nreturn out;\n",
+        "outputs": 10,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 860,
+        "y": 820,
+        "wires": [
+            [
+                "82988df95cd5f024"
+            ],
+            [
+                "11718c00e2925fab"
+            ],
+            [
+                "e0da06c5fe04b6eb"
+            ],
+            [
+                "2fc7c7ae317489f0"
+            ],
+            [
+                "90526371ecde98c5"
+            ],
+            [
+                "f8e2a57008f18bbd"
+            ],
+            [
+                "164677090c7b98e4"
+            ],
+            [
+                "0dda9c3588e73d4a"
+            ],
+            [
+                "4aaf07052197d52a"
+            ],
+            [
+                "743a03146ecabeac"
+            ]
+        ]
+    },
+    {
+        "id": "82988df95cd5f024",
+        "type": "ui-gauge",
+        "z": "0f96f0a0cac21be3",
+        "name": "MQ-2 (Gas)",
+        "group": "grp_gas",
+        "order": 1,
+        "value": "payload",
+        "valueType": "msg",
+        "width": 4,
+        "height": 4,
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "MQ-2 (Gas)",
+        "alwaysShowTitle": false,
+        "units": "ADC DELTA",
+        "icon": "",
+        "prefix": "",
+        "suffix": "",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#5cd65c",
+                "text": "",
+                "textType": "label"
+            },
+            {
+                "from": "300",
+                "color": "#ffc800",
+                "text": "",
+                "textType": "label"
+            },
+            {
+                "from": "500",
+                "color": "#ea5353",
+                "text": "",
+                "textType": "label"
+            }
+        ],
+        "min": 0,
+        "max": "800",
+        "sizeThickness": 16,
+        "sizeGap": 4,
+        "sizeKeyThickness": 8,
+        "styleRounded": true,
+        "styleGlow": false,
+        "className": "",
+        "x": 1230,
+        "y": 620,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "11718c00e2925fab",
+        "type": "ui-gauge",
+        "z": "0f96f0a0cac21be3",
+        "name": "MQ-135 (Udara)",
+        "group": "grp_gas",
+        "order": 2,
+        "value": "payload",
+        "valueType": "msg",
+        "width": 4,
+        "height": 4,
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "MQ-135 (Udara)",
+        "alwaysShowTitle": false,
+        "units": "ADC DELTA",
+        "icon": "",
+        "prefix": "",
+        "suffix": "",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#5cd65c",
+                "text": "",
+                "textType": "label"
+            },
+            {
+                "from": "300",
+                "color": "#ffc800",
+                "text": "",
+                "textType": "label"
+            },
+            {
+                "from": "500",
+                "color": "#ea5353",
+                "text": "",
+                "textType": "label"
+            }
+        ],
+        "min": 0,
+        "max": "800",
+        "sizeThickness": 16,
+        "sizeGap": 4,
+        "sizeKeyThickness": 8,
+        "styleRounded": true,
+        "styleGlow": false,
+        "className": "",
+        "x": 1230,
+        "y": 680,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "e0da06c5fe04b6eb",
+        "type": "ui-gauge",
+        "z": "0f96f0a0cac21be3",
+        "name": "MQ-7 (CO)",
+        "group": "grp_gas",
+        "order": 3,
+        "value": "payload",
+        "valueType": "msg",
+        "width": 4,
+        "height": 4,
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "MQ-7 (CO)",
+        "alwaysShowTitle": false,
+        "units": "ADC DELTA",
+        "icon": "",
+        "prefix": "",
+        "suffix": "",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#5cd65c",
+                "text": "",
+                "textType": "label"
+            },
+            {
+                "from": "300",
+                "color": "#ffc800",
+                "text": "",
+                "textType": "label"
+            },
+            {
+                "from": "500",
+                "color": "#ea5353",
+                "text": "",
+                "textType": "label"
+            }
+        ],
+        "min": 0,
+        "max": "800",
+        "sizeThickness": 16,
+        "sizeGap": 4,
+        "sizeKeyThickness": 8,
+        "styleRounded": true,
+        "styleGlow": false,
+        "className": "",
+        "x": 1210,
+        "y": 740,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "2fc7c7ae317489f0",
+        "type": "ui-gauge",
+        "z": "0f96f0a0cac21be3",
+        "name": "Suhu",
+        "group": "grp_th",
+        "order": 1,
+        "width": 3,
+        "height": 4,
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "Suhu",
+        "units": "°C",
+        "icon": "",
+        "prefix": "",
+        "suffix": "",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#5cd65c"
+            },
+            {
+                "from": "40",
+                "color": "#ffc800"
+            },
+            {
+                "from": "50",
+                "color": "#ea5353"
+            }
+        ],
+        "min": 0,
+        "max": 80,
+        "sizeThickness": 16,
+        "sizeGap": 4,
+        "sizeKeyThickness": 8,
+        "styleRounded": true,
+        "styleGlow": false,
+        "className": "",
+        "x": 1230,
+        "y": 800,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "90526371ecde98c5",
+        "type": "ui-gauge",
+        "z": "0f96f0a0cac21be3",
+        "name": "Kelembapan",
+        "group": "grp_th",
+        "order": 2,
+        "width": 3,
+        "height": 4,
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "Kelembapan",
+        "units": "%",
+        "icon": "",
+        "prefix": "",
+        "suffix": "",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#2196f3"
+            }
+        ],
+        "min": 0,
+        "max": 100,
+        "sizeThickness": 16,
+        "sizeGap": 4,
+        "sizeKeyThickness": 8,
+        "styleRounded": true,
+        "styleGlow": false,
+        "className": "",
+        "x": 1230,
+        "y": 860,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "f8e2a57008f18bbd",
+        "type": "ui-chart",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_chart_gas",
+        "name": "Sensor Gas (nilai ADC)",
+        "label": "Sensor Gas (nilai ADC)",
+        "order": 1,
+        "chartType": "line",
+        "category": "topic",
+        "categoryType": "msg",
+        "xAxisLabel": "",
+        "xAxisProperty": "",
+        "xAxisPropertyType": "timestamp",
+        "xAxisType": "time",
+        "xAxisFormat": "",
+        "xAxisFormatType": "auto",
+        "xmin": "",
+        "xmax": "",
+        "yAxisLabel": "",
+        "yAxisProperty": "payload",
+        "yAxisPropertyType": "msg",
+        "ymin": "",
+        "ymax": "",
+        "bins": "",
+        "action": "append",
+        "stackSeries": false,
+        "pointShape": "circle",
+        "pointRadius": 3,
+        "showLegend": true,
+        "removeOlder": 1,
+        "removeOlderUnit": "3600",
+        "removeOlderPoints": "200",
+        "colors": [
+            "#0095ff",
+            "#ff7f0e",
+            "#2ca02c",
+            "#a347e1",
+            "#d62728",
+            "#ff9896",
+            "#9467bd",
+            "#c5b0d5",
+            "#8c564b"
+        ],
+        "textColor": [
+            "#666666"
+        ],
+        "textColorDefault": true,
+        "gridColor": [
+            "#e5e5e5"
+        ],
+        "gridColorDefault": true,
+        "width": 12,
+        "height": 6,
+        "className": "",
+        "interpolation": "linear",
+        "x": 1220,
+        "y": 900,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "164677090c7b98e4",
+        "type": "ui-chart",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_chart_th",
+        "name": "Suhu & Kelembapan",
+        "label": "Suhu & Kelembapan",
+        "order": 1,
+        "chartType": "line",
+        "category": "topic",
+        "categoryType": "msg",
+        "xAxisLabel": "",
+        "xAxisProperty": "",
+        "xAxisPropertyType": "timestamp",
+        "xAxisType": "time",
+        "xAxisFormat": "",
+        "xAxisFormatType": "auto",
+        "xmin": "",
+        "xmax": "",
+        "yAxisLabel": "",
+        "yAxisProperty": "payload",
+        "yAxisPropertyType": "msg",
+        "ymin": "",
+        "ymax": "",
+        "bins": "",
+        "action": "append",
+        "stackSeries": false,
+        "pointShape": "circle",
+        "pointRadius": 3,
+        "showLegend": true,
+        "removeOlder": 1,
+        "removeOlderUnit": "3600",
+        "removeOlderPoints": "200",
+        "colors": [
+            "#0095ff",
+            "#ff7f0e",
+            "#2ca02c",
+            "#a347e1",
+            "#d62728",
+            "#ff9896",
+            "#9467bd",
+            "#c5b0d5",
+            "#8c564b"
+        ],
+        "textColor": [
+            "#666666"
+        ],
+        "textColorDefault": true,
+        "gridColor": [
+            "#e5e5e5"
+        ],
+        "gridColorDefault": true,
+        "width": 12,
+        "height": 5,
+        "className": "",
+        "interpolation": "linear",
+        "x": 1220,
+        "y": 960,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "0dda9c3588e73d4a",
+        "type": "ui-template",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_status",
+        "page": "",
+        "name": "Panel status",
+        "order": 1,
+        "width": 12,
+        "height": 4,
+        "head": "",
+        "format": "<template>\n  <div v-if=\"msg && msg.payload\" class=\"sm-wrap\">\n    <div class=\"sm-badge\" :class=\"badgeClass\">\n      <div class=\"sm-big\">{{ headline }}</div>\n      <div class=\"sm-sub\">{{ msg.payload.ket }}</div>\n    </div>\n    <div class=\"sm-row\">\n      <div class=\"sm-cell\"><span class=\"sm-k\">Kipas</span><b :class=\"msg.payload.fan ? 'sm-act' : 'sm-idle'\">{{ msg.payload.fan ? 'ON' : 'OFF' }}</b></div>\n      <div class=\"sm-cell\"><span class=\"sm-k\">Buzzer</span><b :class=\"msg.payload.buzzer ? 'sm-act' : 'sm-idle'\">{{ msg.payload.buzzer ? 'ON' : 'OFF' }}</b></div>\n      <div class=\"sm-cell\"><span class=\"sm-k\">Servo</span><b>{{ msg.payload.servo }}</b></div>\n      <div class=\"sm-cell\"><span class=\"sm-k\">Api</span><b :class=\"msg.payload.flame ? 'sm-act' : 'sm-idle'\">{{ msg.payload.flame ? 'TERDETEKSI' : 'Tidak ada' }}</b></div>\n      <div class=\"sm-cell\"><span class=\"sm-k\">Mode</span><b>{{ msg.payload.mode }}</b></div>\n      <div class=\"sm-cell\"><span class=\"sm-k\">Perangkat</span><b :class=\"msg.payload.online === false ? 'sm-act' : 'sm-idle'\">{{ msg.payload.online === false ? 'OFFLINE' : 'Online' }}</b></div>\n    </div>\n    <div class=\"sm-time\">Diperbarui {{ msg.payload.time }}</div>\n  </div>\n  <div v-else class=\"sm-wait\">Menunggu data dari ESP32...</div>\n</template>\n\n<script>\nexport default {\n  computed: {\n    badgeClass() {\n      const p = this.msg && this.msg.payload\n      if (!p) return ''\n      if (p.online === false) return 'sm-OFFLINE'\n      return 'sm-' + (p.status || 'AMAN')\n    },\n    headline() {\n      const p = this.msg && this.msg.payload\n      if (!p) return ''\n      if (p.online === false) return 'OFFLINE'\n      return p.status || 'MENUNGGU'\n    }\n  }\n}\n</script>\n\n<style>\n.sm-badge { padding: 14px 16px; border-radius: 10px; text-align: center; color: #fff; }\n.sm-big { font-size: 30px; font-weight: 700; letter-spacing: 1px; }\n.sm-sub { font-size: 14px; opacity: 0.95; }\n.sm-AMAN { background: #2e7d32; }\n.sm-WASPADA { background: #f9a825; color: #3b2a00; }\n.sm-BAHAYA { background: #c62828; }\n.sm-OFFLINE { background: #616161; }\n.sm-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }\n.sm-cell { flex: 1 1 30%; min-width: 90px; background: rgba(128,128,128,0.15); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; }\n.sm-k { font-size: 12px; opacity: 0.7; }\n.sm-act { color: #e53935; }\n.sm-idle { color: #43a047; }\n.sm-time { margin-top: 8px; font-size: 12px; opacity: 0.6; text-align: right; }\n.sm-wait { padding: 16px; opacity: 0.6; text-align: center; }\n</style>",
+        "storeOutMessages": true,
+        "passthru": false,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1230,
+        "y": 1020,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "4aaf07052197d52a",
+        "type": "ui-template",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_log",
+        "page": "",
+        "ui": "",
+        "name": "Log kejadian",
+        "order": 1,
+        "width": 12,
+        "height": 6,
+        "head": "",
+        "format": "<template>\n  <div v-if=\"msg && msg.payload && msg.payload.length\">\n    <div v-for=\"(e, i) in msg.payload\" :key=\"i\" class=\"lg-row\">\n      <span class=\"lg-time\">{{ e.time }}</span>\n      <span class=\"lg-chip\" :class=\"'lg-' + e.status\">{{ e.status }}</span>\n      <span class=\"lg-ket\">{{ e.ket }}</span>\n    </div>\n  </div>\n  <div v-else class=\"lg-wait\">Belum ada kejadian.</div>\n</template>\n\n<style>\n.lg-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(128,128,128,0.3); font-size: 14px; }\n.lg-time { opacity: 0.6; font-variant-numeric: tabular-nums; }\n.lg-chip { padding: 2px 10px; border-radius: 12px; color: #fff; font-size: 12px; font-weight: 600; }\n.lg-AMAN { background: #2e7d32; }\n.lg-WASPADA { background: #f9a825; color: #3b2a00; }\n.lg-BAHAYA { background: #c62828; }\n.lg-OFFLINE { background: #616161; }\n.lg-wait { opacity: 0.6; padding: 8px 0; }\n</style>",
+        "storeOutMessages": true,
+        "passthru": false,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1230,
+        "y": 1060,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "1167c6ddf5f5a180",
+        "type": "ui-button",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_ctrl",
+        "name": "Mode Otomatis",
+        "label": "Mode Otomatis",
+        "order": 1,
+        "width": 2,
+        "height": 1,
+        "emulateClick": false,
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#0094CE",
+        "className": "",
+        "icon": "",
+        "iconPosition": "left",
+        "payload": "MODE_AUTO",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "buttonColor": "#0094CE",
+        "textColor": "#ffffff",
+        "iconColor": "",
+        "enableClick": true,
+        "enablePointerdown": false,
+        "pointerdownPayload": "",
+        "pointerdownPayloadType": "str",
+        "enablePointerup": false,
+        "pointerupPayload": "",
+        "pointerupPayloadType": "str",
+        "x": 1440,
+        "y": 920,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "e4eb45fe8758abc7",
+        "type": "ui-button",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_ctrl",
+        "name": "Tes Aktuator",
+        "label": "Tes Aktuator",
+        "order": 2,
+        "width": 2,
+        "height": 1,
+        "emulateClick": false,
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#f08c00",
+        "className": "",
+        "icon": "",
+        "iconPosition": "left",
+        "payload": "TEST",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "buttonColor": "#f08c00",
+        "textColor": "#ffffff",
+        "iconColor": "",
+        "enableClick": true,
+        "enablePointerdown": false,
+        "pointerdownPayload": "",
+        "pointerdownPayloadType": "str",
+        "enablePointerup": false,
+        "pointerupPayload": "",
+        "pointerupPayloadType": "str",
+        "x": 1430,
+        "y": 980,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "06beb586f645195a",
+        "type": "ui-button",
+        "z": "0f96f0a0cac21be3",
+        "group": "grp_ctrl",
+        "name": "Kalibrasi",
+        "label": "Kalibrasi",
+        "order": 3,
+        "width": 2,
+        "height": 1,
+        "emulateClick": false,
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#e03131",
+        "className": "",
+        "icon": "",
+        "iconPosition": "left",
+        "payload": "CALIBRATE",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "buttonColor": "#e03131",
+        "textColor": "#ffffff",
+        "iconColor": "",
+        "enableClick": true,
+        "enablePointerdown": false,
+        "pointerdownPayload": "",
+        "pointerdownPayloadType": "str",
+        "enablePointerup": false,
+        "pointerupPayload": "",
+        "pointerupPayloadType": "str",
+        "x": 1420,
+        "y": 1040,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "494b2f20eafaa896",
+        "type": "Stackhero-MySQL",
+        "z": "0f96f0a0cac21be3",
+        "server": "ffcddba4bffa7d66",
+        "name": "",
+        "x": 770,
+        "y": 1020,
+        "wires": [
+            [
+                "b3a33e4ef26f1915",
+                "f18f7216d9aa6320",
+                "73a8d379d08e7c87"
+            ]
+        ]
+    },
+    {
+        "id": "743a03146ecabeac",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "function 2",
+        "func": "\n// ============================================\n// FUNCTION 2 - SIMPAN DATA SENSOR KE MYSQL\n// Smart Smoke Detection\n// Metode ADC DELTA\n// Penyimpanan setiap 10 detik\n// ============================================\n\nconst d = msg.payload;\n\nif (!d || typeof d !== 'object') {\n    return null;\n}\n\n// ============================================\n// 1. FUNGSI KONVERSI ANGKA\n// ============================================\n\nfunction num(v) {\n    if (v === null || v === undefined || v === '') {\n        return null;\n    }\n\n    const n = Number(v);\n\n    return Number.isFinite(n) ? n : null;\n}\n\n// ============================================\n// 2. VALIDASI DATA ADC DAN BASELINE\n// ============================================\n\nconst smoke = num(d.smoke);\nconst air = num(d.air);\nconst co = num(d.co);\n\nconst bs = num(d.bs);\nconst ba = num(d.ba);\nconst bc = num(d.bc);\n\n// Semua ADC dan baseline wajib tersedia\nif (\n    [smoke, air, co, bs, ba, bc]\n        .some(v => v === null)\n) {\n    node.warn('Data ADC atau baseline tidak lengkap. Data tidak disimpan.');\n    return null;\n}\n\n// ============================================\n// 3. HITUNG ADC DELTA\n// ============================================\n\n// Hitung ulang agar data database konsisten\nconst smokeDelta = smoke - bs;\nconst airDelta = air - ba;\nconst coDelta = co - bc;\n\n// ============================================\n// 4. NORMALISASI FLAME\n// ============================================\n\nconst flame =\n    d.flame === true ||\n        d.flame === 1 ||\n        String(d.flame).toLowerCase() === 'true' ||\n        String(d.flame) === '1' ||\n        String(d.flame).toLowerCase() === 'on'\n        ? 1 : 0;\n\n// ============================================\n// 5. DATA SUHU DAN KELEMBAPAN\n// ============================================\n\nconst suhu = num(d.suhu !== undefined ? d.suhu : d.temp);\n\nconst kelembapan = num(\n    d.kelembapan !== undefined ? d.kelembapan : d.hum\n);\n\n// ============================================\n// 6. BATASI PENYIMPANAN 10 DETIK\n// ============================================\n\nconst now = Date.now();\nconst lastInsert = flow.get('lastInsert') || 0;\n\nif (now - lastInsert < 10000) {\n    return null;\n}\n\n// ============================================\n// 7. QUERY INSERT MYSQL\n// ============================================\n\nmsg.topic = `\nINSERT INTO sensor_log (\n    smoke,\n    air,\n    co,\n\n    bs,\n    ba,\n    bc,\n\n    smoke_delta,\n    air_delta,\n    co_delta,\n\n    flame,\n    suhu,\n    kelembapan,\n\n    detection_method,\n    threshold_version\n)\nVALUES (\n    :smoke,\n    :air,\n    :co,\n\n    :bs,\n    :ba,\n    :bc,\n\n    :smoke_delta,\n    :air_delta,\n    :co_delta,\n\n    :flame,\n    :suhu,\n    :kelembapan,\n\n    :detection_method,\n    :threshold_version\n)\n`;\n\n// ============================================\n// 8. DATA PARAMETER KE MYSQL\n// ============================================\n\nmsg.payload = {\n\n    // ADC mentah\n    smoke: smoke,\n    air: air,\n    co: co,\n\n    // Baseline\n    bs: bs,\n    ba: ba,\n    bc: bc,\n\n    // Hasil perhitungan ADC delta\n    smoke_delta: smokeDelta,\n    air_delta: airDelta,\n    co_delta: coDelta,\n\n    // Sensor tambahan\n    flame: flame,\n    suhu: suhu,\n    kelembapan: kelembapan,\n\n    // Metode pengolahan\n    detection_method: 'ADC_DELTA',\n    threshold_version: 'ADC_DELTA_V1'\n};\n\n// Simpan waktu insert terakhir\nflow.set('lastInsert', now);\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 620,
+        "y": 960,
+        "wires": [
+            [
+                "494b2f20eafaa896"
+            ]
+        ]
+    },
+    {
+        "id": "9c44c99254a9a410",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "function 3",
+        "func": "const s = msg.payload;\nif (!s || typeof s !== 'object' || !s.status) return null;\n\nconst kini = [s.status, s.fan ? 1 : 0, s.buzzer ? 1 : 0, s.servo ? 1 : 0, s.mode || 'AUTO'].join('|');\nconst lalu = flow.get('prevEvent');\nif (lalu === kini) return null;\nflow.set('prevEvent', kini);\n\nconst statusBerubah = !lalu || lalu.split('|')[0] !== s.status;\nconst KET = { AMAN: 'Kondisi normal', WASPADA: 'Kualitas udara menurun', BAHAYA: 'Bahaya terdeteksi' };\n\nmsg.topic = 'INSERT INTO event_log (jenis, keterangan, kipas, buzzer, servo, mode) VALUES (:jenis, :ket, :kipas, :buzzer, :servo, :mode)';\nmsg.payload = {\n    jenis: s.status,\n    ket: statusBerubah ? (KET[s.status] || '') : 'Perubahan kipas/mode manual',\n    kipas: s.fan ? 1 : 0, buzzer: s.buzzer ? 1 : 0, servo: s.servo ? 1 : 0, mode: s.mode || 'AUTO'\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 560,
+        "y": 1060,
+        "wires": [
+            [
+                "494b2f20eafaa896"
+            ]
+        ]
+    },
+    {
+        "id": "b3a33e4ef26f1915",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 2",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 960,
+        "y": 1020,
+        "wires": []
+    },
+    {
+        "id": "f18f7216d9aa6320",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "function 6",
+        "func": "const sql = String(msg.topic || \"\");\nif (!/^\\s*SELECT\\b/i.test(sql) || !/FROM\\s+event_log\\b/i.test(sql)) return null;\nif (!Array.isArray(msg.payload)) return null;\n\nconst fmt = (v) => {\n    if (v === null || v === undefined) return \"-\";\n    if (typeof v === \"string\") return v.replace(\"T\", \" \").replace(/\\.\\d+Z?$/, \"\");\n    return new Date(v).toLocaleString(\"id-ID\", { timeZone: \"Asia/Jakarta\", hour12: false });\n};\nconst onoff = (v) => Number(v) === 1 ? \"ON\" : \"OFF\";\nconst openclose = (v) => Number(v) === 1 ? \"BUKA\" : \"TUTUP\";\n\nmsg.payload = msg.payload.map(r => ({\n    \"Waktu\": fmt(r.waktu),\n    \"Jenis\": r.jenis,\n    \"Keterangan\": r.keterangan,\n    \"Kipas\": onoff(r.kipas),\n    \"Buzzer\": onoff(r.buzzer),\n    \"Servo\": openclose(r.servo),\n    \"Mode\": r.mode\n}));\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1040,
+        "y": 1160,
+        "wires": [
+            [
+                "aad598a225f12795"
+            ]
+        ]
+    },
+    {
+        "id": "f43122adc5c06f43",
+        "type": "ui-table",
+        "z": "0f96f0a0cac21be3",
+        "group": "82345f19c221f245",
+        "name": "Log Sensor",
+        "label": "",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "maxrows": "10",
+        "passthru": false,
+        "autocols": true,
+        "showSearch": true,
+        "deselect": true,
+        "selectionType": "none",
+        "columns": [],
+        "mobileBreakpoint": "sm",
+        "mobileBreakpointType": "defaults",
+        "action": "replace",
+        "className": "",
+        "x": 1230,
+        "y": 1280,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "73a8d379d08e7c87",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "function 7",
+        "func": "\nconst sql = String(msg.topic || \"\");\n\n// Hanya menerima SELECT sensor_log\nif (\n    !/^\\s*SELECT\\b/i.test(sql) ||\n    !/FROM\\s+sensor_log\\b/i.test(sql)\n) {\n    return null;\n}\n\n// Pastikan hasil MySQL berupa array\nif (!Array.isArray(msg.payload)) {\n    node.warn(\"Hasil sensor_log bukan array.\");\n    return null;\n}\n\nconst fmt = (v) => {\n    if (v === null || v === undefined) return \"-\";\n\n    if (typeof v === \"string\") {\n        return v.replace(\"T\", \" \").replace(/\\.\\d+Z?$/, \"\");\n    }\n\n    const d = new Date(v);\n\n    if (isNaN(d.getTime())) return \"-\";\n\n    return d.toLocaleString(\"id-ID\", {\n        timeZone: \"Asia/Jakarta\",\n        hour12: false\n    });\n};\n\nconst num = (v) => {\n    if (v === null || v === undefined || v === \"\") return \"-\";\n\n    const n = Number(v);\n    return Number.isFinite(n) ? n.toFixed(1) : \"-\";\n};\n\nconst api = (v) => {\n    return (\n        v === true ||\n        Number(v) === 1 ||\n        String(v).toLowerCase() === \"true\" ||\n        String(v).toLowerCase() === \"on\"\n    ) ? \"Ya\" : \"Tidak\";\n};\n\nmsg.payload = msg.payload.map(r => ({\n    \"Waktu\": fmt(r.waktu),\n\n    \"MQ-2 ADC\": num(r.smoke),\n    \"MQ-2 Baseline\": num(r.bs),\n    \"MQ-2 Delta\": num(r.smoke_delta),\n\n    \"MQ-135 ADC\": num(r.air),\n    \"MQ-135 Baseline\": num(r.ba),\n    \"MQ-135 Delta\": num(r.air_delta),\n\n    \"MQ-7 ADC\": num(r.co),\n    \"MQ-7 Baseline\": num(r.bc),\n    \"MQ-7 Delta\": num(r.co_delta),\n\n    \"Api\": api(r.flame),\n    \"Suhu (°C)\": num(r.suhu),\n    \"Kelembapan (%)\": num(r.kelembapan)\n}));\n\nnode.warn(\"Jumlah data sensor ditampilkan: \" + msg.payload.length);\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1040,
+        "y": 1280,
+        "wires": [
+            [
+                "f43122adc5c06f43",
+                "9aac948d58afe717"
+            ]
+        ]
+    },
+    {
+        "id": "8a4a9a086cee9334",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "function 4",
+        "func": "\nif (typeof msg.payload !== \"string\") return null;\n\nconst P = {\n    \"15m\": { interval: \"15 MINUTE\", batas: 100 },\n    \"1h\": { interval: \"1 HOUR\", batas: 400 },\n    \"3h\": { interval: \"3 HOUR\", batas: 1100 },\n    \"6h\": { interval: \"6 HOUR\", batas: 2200 },\n    \"12h\": { interval: \"12 HOUR\", batas: 3300 }\n};\n\nconst kunci = P[msg.payload]\n    ? msg.payload\n    : (flow.get(\"periode\") || \"1h\");\n\nflow.set(\"periode\", kunci);\n\nconst { interval, batas } = P[kunci];\n\n// Query riwayat sensor\nconst sensor = {\n    topic:\n        \"SELECT waktu, smoke, air, co, bs, ba, bc, \" +\n        \"smoke_delta, air_delta, co_delta, \" +\n        \"flame, suhu, kelembapan \" +\n        \"FROM sensor_log \" +\n        \"WHERE waktu >= NOW() - INTERVAL \" +\n        interval + \" \" +\n        \"ORDER BY waktu DESC LIMIT \" + batas,\n    payload: {}\n};\n\n// Query riwayat kejadian\nconst kejadian = {\n    topic:\n        \"SELECT waktu, jenis, keterangan, kipas, buzzer, `mode`, servo \" +\n        \"FROM event_log \" +\n        \"WHERE waktu >= NOW() - INTERVAL \" +\n        interval + \" \" +\n        \"ORDER BY waktu DESC LIMIT 500\",\n    payload: {}\n};\n\n// Satu output Function 4, dua pesan menuju MySQL\nreturn [[sensor, kejadian]];\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 560,
+        "y": 1180,
+        "wires": [
+            [
+                "494b2f20eafaa896"
+            ]
+        ]
+    },
+    {
+        "id": "10aa0df5c7c211d2",
+        "type": "inject",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "1h",
+        "payloadType": "str",
+        "x": 330,
+        "y": 1200,
+        "wires": [
+            [
+                "8a4a9a086cee9334"
+            ]
+        ]
+    },
+    {
+        "id": "4cb468e5a3135029",
+        "type": "ui-dropdown",
+        "z": "0f96f0a0cac21be3",
+        "group": "6fb022c7c7a3b187",
+        "name": "",
+        "label": "Select Option:",
+        "tooltip": "",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "multiple": false,
+        "chips": true,
+        "clearable": false,
+        "options": [
+            {
+                "label": "15 menit",
+                "value": "15m",
+                "type": "str"
+            },
+            {
+                "label": "1 jam",
+                "value": "1h",
+                "type": "str"
+            },
+            {
+                "label": "3 jam",
+                "value": "3h",
+                "type": "str"
+            },
+            {
+                "label": "6 jam",
+                "value": "6h",
+                "type": "str"
+            },
+            {
+                "label": "12 jam",
+                "value": "12h",
+                "type": "str"
+            }
+        ],
+        "payload": "",
+        "topic": "payload",
+        "topicType": "msg",
+        "className": "",
+        "typeIsComboBox": true,
+        "msgTrigger": "onChange",
+        "x": 320,
+        "y": 1260,
+        "wires": [
+            [
+                "8a4a9a086cee9334"
+            ]
+        ]
+    },
+    {
+        "id": "daf39342ca455f10",
+        "type": "ui-button",
+        "z": "0f96f0a0cac21be3",
+        "group": "6fb022c7c7a3b187",
+        "name": "Muat ulang",
+        "label": "Muat Ulang",
+        "order": 2,
+        "width": 0,
+        "height": 0,
+        "emulateClick": false,
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "",
+        "className": "",
+        "icon": "",
+        "iconPosition": "left",
+        "payload": "REFRESH",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "buttonColor": "",
+        "textColor": "",
+        "iconColor": "",
+        "enableClick": true,
+        "enablePointerdown": false,
+        "pointerdownPayload": "",
+        "pointerdownPayloadType": "str",
+        "enablePointerup": false,
+        "pointerupPayload": "",
+        "pointerupPayloadType": "str",
+        "x": 330,
+        "y": 1320,
+        "wires": [
+            [
+                "8a4a9a086cee9334"
+            ]
+        ]
+    },
+    {
+        "id": "558ce41e5ea433bb",
+        "type": "telegram receiver",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "bot": "tg_bot",
+        "saveDataDir": "",
+        "filterCommands": false,
+        "hasinput": false,
+        "inputs": 0,
+        "handleallupdates": false,
+        "handleprocessupdates": false,
+        "x": 1010,
+        "y": 460,
+        "wires": [
+            [
+                "227a2c40c7e8a8e3",
+                "e8a19822c3fa6298"
+            ],
+            [
+                "ac28731775854621"
+            ]
+        ]
+    },
+    {
+        "id": "286feace8c2a5c0b",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Perintah Telegram",
+        "func": "\nconst p = msg.payload || {};\nif (p.type !== \"message\") return null;\n\nconst chatId = String(p.chatId || \"\");\nconst isiPesan = String(p.content || \"\").trim();\nconst cmd = isiPesan.toLowerCase().split(/[\\s@]/)[0];\n\n// =====================================\n// PERINTAH ADMIN: SETUJUI / TOLAK\n// =====================================\nconst adminMatch = isiPesan.match(\n    /^\\/(setujui|tolak)(?:@\\w+)?\\s+(\\d+)$/i\n);\n\nif (adminMatch) {\n    msg.telegramSenderId = chatId;\n    msg.adminCommandText = isiPesan;\n\n    return [null, null, msg];\n}\n\n// =====================================\n// FUNGSI BANTU\n// =====================================\nconst balas = (t) => ({\n    payload: {\n        chatId: chatId,\n        type: \"message\",\n        content: t\n    }\n});\n\nconst kode = (k) => ({ payload: k });\n\nconst statusAktuator = (nilai, aktif, mati) =>\n    nilai ? aktif : mati;\n\n// =====================================\n// DAFTAR PERINTAH\n// =====================================\nconst PERINTAH = {\n    // FAN 1\n    \"/fan1_on\": [\"FAN1_ON\", \"FAN 1 dinyalakan\"],\n    \"/fan1_off\": [\"FAN1_OFF\", \"FAN 1 dimatikan\"],\n\n    // FAN 2\n    \"/fan2_on\": [\"FAN2_ON\", \"FAN 2 dinyalakan\"],\n    \"/fan2_off\": [\"FAN2_OFF\", \"FAN 2 dimatikan\"],\n\n    // FAN 3\n    \"/fan3_on\": [\"FAN3_ON\", \"FAN 3 dinyalakan\"],\n    \"/fan3_off\": [\"FAN3_OFF\", \"FAN 3 dimatikan\"],\n\n    // FAN 4\n    \"/fan4_on\": [\"FAN4_ON\", \"FAN 4 dinyalakan\"],\n    \"/fan4_off\": [\"FAN4_OFF\", \"FAN 4 dimatikan\"],\n\n    // SERVO 1\n    \"/servo1_buka\": [\"SERVO1_OPEN\", \"SERVO 1 dibuka\"],\n    \"/servo1_tutup\": [\"SERVO1_CLOSE\", \"SERVO 1 ditutup\"],\n\n    // SERVO 2\n    \"/servo2_buka\": [\"SERVO2_OPEN\", \"SERVO 2 dibuka\"],\n    \"/servo2_tutup\": [\"SERVO2_CLOSE\", \"SERVO 2 ditutup\"],\n\n    // MODE\n    \"/auto\": [\"MODE_AUTO\", \"Kembali ke mode otomatis\"],\n\n    // TEST\n    \"/tes\": [\"TEST\", \"Uji aktuator dijalankan (hanya saat status AMAN)\"]\n};\n\n// =====================================\n// HELP / START\n// =====================================\nif (cmd === \"/start\" || cmd === \"/help\") {\n    return [null, balas([\n        \"🤖 PERINTAH SMART SMOKE DETECTION\",\n        \"\",\n        \"📊 INFORMASI:\",\n        \"/status - kondisi terakhir\",\n        \"/riwayat - 5 kejadian terakhir\",\n        \"\",\n        \"🌀 KONTROL KIPAS:\",\n        \"/fan1_on - nyalakan FAN 1\",\n        \"/fan1_off - matikan FAN 1\",\n        \"/fan2_on - nyalakan FAN 2\",\n        \"/fan2_off - matikan FAN 2\",\n        \"/fan3_on - nyalakan FAN 3\",\n        \"/fan3_off - matikan FAN 3\",\n        \"/fan4_on - nyalakan FAN 4\",\n        \"/fan4_off - matikan FAN 4\",\n        \"\",\n        \"🪟 KONTROL SERVO:\",\n        \"/servo1_buka - buka SERVO 1\",\n        \"/servo1_tutup - tutup SERVO 1\",\n        \"/servo2_buka - buka SERVO 2\",\n        \"/servo2_tutup - tutup SERVO 2\",\n        \"\",\n        \"⚙️ MODE SISTEM:\",\n        \"/auto - kembali ke mode otomatis\",\n        \"/tes - uji aktuator (saat AMAN)\",\n        \"/kalibrasi - kalibrasi baseline\",\n        \"/kalibrasi_ya - konfirmasi kalibrasi\",\n        \"\",\n        \"👤 ADMIN:\",\n        \"/setujui CHAT_ID - setujui akun\",\n        \"/tolak CHAT_ID - tolak akun\"\n    ].join(\"\\n\")), null];\n}\n\n// =====================================\n// STATUS SISTEM\n// =====================================\nif (cmd === \"/status\") {\n    const s = flow.get(\"statusTerakhir\");\n    const d = flow.get(\"sensorTerakhir\") || {};\n    const on = flow.get(\"tgOnline\");\n\n    if (!s) {\n        return [null, balas(\n            \"Belum ada data status dari ESP32.\"\n        ), null];\n    }\n\n    return [null, balas([\n        \"📊 STATUS SMART SMOKE DETECTION\",\n        \"\",\n        \"Kondisi: \" + (s.status || \"-\") +\n            (on === false ? \" ⚠️ (ESP32 OFFLINE, data lama)\" : \"\"),\n        \"Mode: \" + (s.mode || \"-\"),\n        \"\",\n        \"🌀 STATUS KIPAS:\",\n        \"FAN 1: \" + statusAktuator(s.fan1, \"ON\", \"OFF\"),\n        \"FAN 2: \" + statusAktuator(s.fan2, \"ON\", \"OFF\"),\n        \"FAN 3: \" + statusAktuator(s.fan3, \"ON\", \"OFF\"),\n        \"FAN 4: \" + statusAktuator(s.fan4, \"ON\", \"OFF\"),\n        \"\",\n        \"🔊 Buzzer: \" + statusAktuator(s.buzzer, \"ON\", \"OFF\"),\n        \"\",\n        \"🪟 STATUS SERVO:\",\n        \"SERVO 1: \" + statusAktuator(s.servo1, \"BUKA\", \"TUTUP\"),\n        \"SERVO 2: \" + statusAktuator(s.servo2, \"BUKA\", \"TUTUP\"),\n        \"\",\n        \"🌡️ DATA SENSOR:\",\n        \"Suhu: \" + (d.temp ?? \"-\") + \" °C\",\n        \"Kelembapan: \" + (d.hum ?? \"-\") + \" %\",\n        \"Asap (ADC): \" + (d.smoke ?? \"-\"),\n        \"Udara (ADC): \" + (d.air ?? \"-\"),\n        \"CO (ADC): \" + (d.co ?? \"-\"),\n        \"Api: \" + (d.flame ? \"TERDETEKSI\" : \"Tidak ada\")\n    ].join(\"\\n\")), null];\n}\n\n// =====================================\n// RIWAYAT\n// =====================================\nif (cmd === \"/riwayat\") {\n    const log = (flow.get(\"log\") || []).slice(0, 5);\n\n    if (!log.length) {\n        return [null, balas(\n            \"Belum ada kejadian tercatat.\"\n        ), null];\n    }\n\n    return [\n        null,\n        balas(\n            \"📋 KEJADIAN TERAKHIR:\\n\" +\n            log.map(e =>\n                e.time + \"  \" + e.status + \"  \" + e.ket\n            ).join(\"\\n\")\n        ),\n        null\n    ];\n}\n\n// =====================================\n// EKSEKUSI PERINTAH AKTUATOR\n// =====================================\nif (PERINTAH[cmd]) {\n    const [k, ket] = PERINTAH[cmd];\n\n    return [\n        kode(k),\n        balas(\n            \"✅ \" + ket +\n            \"\\n\\nCatatan keselamatan:\" +\n            \"\\n- Saat BAHAYA, seluruh kipas dipaksa ON.\" +\n            \"\\n- Buzzer aktif saat BAHAYA.\" +\n            \"\\n- Jika api terdeteksi, servo dipaksa TUTUP.\"\n        ),\n        null\n    ];\n}\n\n// =====================================\n// KALIBRASI\n// =====================================\nif (cmd === \"/kalibrasi\") {\n    flow.set(\"tgKalibrasi\", Date.now());\n\n    return [null, balas(\n        \"⚠️ KALIBRASI SENSOR\\n\\n\" +\n        \"Kalibrasi mengambil baseline dari kondisi udara saat ini.\\n\" +\n        \"Pastikan udara bersih sebelum melanjutkan.\\n\\n\" +\n        \"Ketik /kalibrasi_ya dalam 60 detik untuk konfirmasi.\"\n    ), null];\n}\n\nif (cmd === \"/kalibrasi_ya\") {\n    const t = flow.get(\"tgKalibrasi\") || 0;\n    flow.set(\"tgKalibrasi\", 0);\n\n    if (!t || Date.now() - t > 60000) {\n        return [null, balas(\n            \"⚠️ Permintaan kalibrasi kedaluwarsa.\\n\" +\n            \"Ketik /kalibrasi lagi.\"\n        ), null];\n    }\n\n    return [\n        kode(\"CALIBRATE\"),\n        balas(\"✅ Perintah kalibrasi dikirim.\"),\n        null\n    ];\n}\n\n// =====================================\n// PERINTAH TIDAK DIKENAL\n// =====================================\nreturn [\n    null,\n    balas(\"❌ Perintah tidak dikenal.\\nKetik /help untuk melihat daftar perintah.\"),\n    null\n];\n",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1390,
+        "y": 460,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ],
+            [
+                "d5ced602612e4cec"
+            ],
+            [
+                "a9abbedacf3829f7",
+                "8a73428529714041"
+            ]
+        ]
+    },
+    {
+        "id": "d5ced602612e4cec",
+        "type": "telegram sender",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "bot": "tg_bot",
+        "haserroroutput": false,
+        "outputs": 1,
+        "x": 1970,
+        "y": 60,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "227a2c40c7e8a8e3",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "Telegram masuk (lihat chatId)",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1470,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "ac28731775854621",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "Akses ditolak",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1450,
+        "y": 620,
+        "wires": []
+    },
+    {
+        "id": "154e2f7c6ec3ae99",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Logika Cloud",
+        "func": "// ============================================\n// LOGIKA CLOUD\n// Smart Smoke Detection & Air Ventilation\n// 4 Kipas + 2 Servo\n// Metode: ADC DELTA\n// ============================================\n\n// ============================================\n// 1. AMBANG SENSOR\n// HARUS SAMA DENGAN FIRMWARE ESP32\n// ============================================\n\n// MQ-2\nconst SMOKE_WARN_DELTA = 300;\nconst SMOKE_DANGER_DELTA = 500;\n\n// MQ-135\nconst AIR_WARN_DELTA = 300;\nconst AIR_DANGER_DELTA = 500;\n\n// MQ-7\nconst CO_WARN_DELTA = 300;\nconst CO_DANGER_DELTA = 500;\n\n// DHT22\nconst TEMP_WARN_C = 40.0;\nconst TEMP_DANGER_C = 50.0;\n\n// Histeresis\nconst HYST_DELTA = 50;\nconst HYST_TEMP_C = 2.0;\n\n// Konfirmasi perubahan status\nconst CONFIRM_UP = 2;\nconst CONFIRM_DOWN = 5;\n\nconst RANK = {\n    AMAN: 0,\n    WASPADA: 1,\n    BAHAYA: 2\n};\n\n// ============================================\n// 2. FUNGSI BANTU\n// ============================================\n\nfunction num(v) {\n    if (v === null || v === undefined || v === '') {\n        return null;\n    }\n\n    const n = Number(v);\n    return Number.isFinite(n) ? n : null;\n}\n\nfunction toBool(v) {\n    return v === true ||\n        v === 1 ||\n        String(v).toLowerCase() === 'true' ||\n        String(v) === '1' ||\n        String(v).toLowerCase() === 'on';\n}\n\n// ============================================\n// 3. AMBIL DATA SENSOR\n// ============================================\n\nconst d = msg.payload;\n\nif (!d || typeof d !== 'object') {\n    return null;\n}\n\nconst smoke = num(d.smoke);\nconst air = num(d.air);\nconst co = num(d.co);\n\nconst bs = num(d.bs);\nconst ba = num(d.ba);\nconst bc = num(d.bc);\n\nconst temp = num(d.temp);\n\n// Data ADC dan baseline wajib tersedia\nif (\n    [smoke, air, co, bs, ba, bc]\n        .some(v => v === null)\n) {\n    return null;\n}\n\n// ============================================\n// 4. HITUNG ADC DELTA\n// ============================================\n\nconst dSmoke = smoke - bs;\nconst dAir = air - ba;\nconst dCo = co - bc;\n\nconst api = toBool(d.flame);\n\nconst manual = num(d.mm) === 1 || d.mm === true;\n\n// ============================================\n// 5. STATUS INTERNAL\n// ============================================\n\nlet st = flow.get('lg') || {\n    status: 'AMAN',\n    up: 0,\n    down: 0,\n    pending: null,\n    lastUp: null,\n};\n\n// Pastikan status tersimpan valid\nif (!Object.prototype.hasOwnProperty.call(RANK, st.status)) {\n    st = {\n        status: 'AMAN',\n        up: 0,\n        down: 0,\n        pending: null,\n        lastUp: null\n    };\n}\n\n// Deteksi ESP32 restart\nconst uptime = num(d.up);\n\nif (uptime !== null) {\n\n    if (st.lastUp !== null && uptime < st.lastUp) {\n        st.up = 0;\n        st.down = 0;\n        st.pending = null;\n    }\n\n    st.lastUp = uptime;\n}\n\n// ============================================\n// 6. HITUNG HISTERESIS\n// ============================================\n\nconst wasDanger = st.status === 'BAHAYA';\nconst wasActive = st.status !== 'AMAN';\n\nconst hd = wasDanger ? HYST_DELTA : 0;\nconst hw = wasActive ? HYST_DELTA : 0;\nconst ht = wasDanger ? HYST_TEMP_C : 0;\n\n// ============================================\n// 7. EVALUASI MASING-MASING SENSOR\n// ============================================\n\n// MQ-2\nconst smokeWarn =\n    dSmoke >= SMOKE_WARN_DELTA - hw;\n\nconst smokeDanger =\n    dSmoke >= SMOKE_DANGER_DELTA - hd;\n\n// MQ-135\nconst airWarn =\n    dAir >= AIR_WARN_DELTA - hw;\n\nconst airDanger =\n    dAir >= AIR_DANGER_DELTA - hd;\n\n// MQ-7\nconst coWarn =\n    dCo >= CO_WARN_DELTA - hw;\n\nconst coDanger =\n    dCo >= CO_DANGER_DELTA - hd;\n\n// DHT22\nconst tempWarn =\n    temp !== null &&\n    temp >= TEMP_WARN_C - (wasActive ? HYST_TEMP_C : 0);\n\nconst tempDanger =\n    temp !== null &&\n    temp >= TEMP_DANGER_C - ht;\n\n// Flame\n// Api langsung BAHAYA tanpa menunggu konfirmasi.\nconst flameDanger = api;\n\n// ============================================\n// 8. LOGIKA OR: SALAH SATU SENSOR CUKUP\n// ============================================\n\nconst dangerSources = [];\n\nif (smokeDanger) dangerSources.push('MQ-2');\nif (airDanger) dangerSources.push('MQ-135');\nif (coDanger) dangerSources.push('MQ-7');\nif (tempDanger) dangerSources.push('DHT22');\nif (flameDanger) dangerSources.push('FLAME');\n\nconst danger = dangerSources.length > 0;\n\n// WASPADA\nconst warning =\n    smokeWarn ||\n    airWarn ||\n    coWarn ||\n    tempWarn;\n\n// Tentukan target status\nlet calon;\n\nif (danger) {\n    calon = 'BAHAYA';\n}\nelse if (warning) {\n    calon = 'WASPADA';\n}\nelse {\n    calon = 'AMAN';\n}\n\n// ============================================\n// 9. UPDATE STATUS + KONFIRMASI\n// ============================================\n\n// Api langsung BAHAYA\nif (api) {\n\n    st.status = 'BAHAYA';\n    st.up = 0;\n    st.down = 0;\n    st.pending = null;\n\n}\nelse {\n\n    const sekarang = RANK[st.status];\n    const target = RANK[calon];\n\n    if (target === sekarang) {\n\n        st.up = 0;\n        st.down = 0;\n        st.pending = null;\n\n    }\n\n    // Kenaikan status\n    else if (target > sekarang) {\n\n        st.down = 0;\n\n        if (st.pending !== calon) {\n            st.pending = calon;\n            st.up = 1;\n        }\n        else {\n            st.up++;\n        }\n\n        if (st.up >= CONFIRM_UP) {\n\n            st.status = calon;\n            st.up = 0;\n            st.down = 0;\n            st.pending = null;\n        }\n    }\n\n    // Penurunan status\n    else {\n\n        st.up = 0;\n\n        if (st.pending !== calon) {\n            st.pending = calon;\n            st.down = 1;\n        }\n        else {\n            st.down++;\n        }\n\n        if (st.down >= CONFIRM_DOWN) {\n\n            st.status = calon;\n            st.up = 0;\n            st.down = 0;\n            st.pending = null;\n        }\n    }\n}\n\nflow.set('lg', st);\n\n// ============================================\n// 10. SUMBER BAHAYA\n// ============================================\n\nlet alarmSource = dangerSources.length\n    ? dangerSources.join(', ')\n    : (st.status === 'BAHAYA' ? 'HISTERESIS' : '-');\n\n// ============================================\n// 11. LOGIKA 4 KIPAS\n// ============================================\n\nlet fan1 = false;\nlet fan2 = false;\nlet fan3 = false;\nlet fan4 = false;\n\n// BAHAYA: semua kipas menyala\nif (st.status === 'BAHAYA') {\n\n    fan1 = true;\n    fan2 = true;\n    fan3 = true;\n    fan4 = true;\n\n}\n\n// MODE MANUAL\nelse if (manual) {\n\n    fan1 = num(d.f1m) === 1 && num(d.f1c) === 1;\n    fan2 = num(d.f2m) === 1 && num(d.f2c) === 1;\n    fan3 = num(d.f3m) === 1 && num(d.f3c) === 1;\n    fan4 = num(d.f4m) === 1 && num(d.f4c) === 1;\n\n}\n\n// MODE AUTO - WASPADA\nelse if (st.status === 'WASPADA') {\n\n    fan1 = true;\n    fan2 = true;\n\n}\n\n// MODE AUTO - AMAN\n// Semua kipas tetap mati.\n\n// ============================================\n// 12. LOGIKA BUZZER\n// ============================================\n\nconst buzzer = st.status === 'BAHAYA';\n\n// ============================================\n// 13. LOGIKA 2 SERVO\n// ============================================\n\nlet servo1 = 0;\nlet servo2 = 0;\n\n// PRIORITAS 1: API\n// Kedua servo wajib tertutup.\nif (api) {\n\n    servo1 = 0;\n    servo2 = 0;\n\n}\n\n// PRIORITAS 2: BAHAYA NON-API\n// Kedua servo terbuka.\nelse if (st.status === 'BAHAYA' && !api) {\n\n    servo1 = 1;\n    servo2 = 1;\n\n}\n\n// PRIORITAS 3: MANUAL\nelse if (manual) {\n\n    servo1 =\n        num(d.s1m) === 1 && num(d.s1c) === 1 ? 1 : 0;\n\n    servo2 =\n        num(d.s2m) === 1 && num(d.s2c) === 1 ? 1 : 0;\n}\n\n// AUTO AMAN/WASPADA: kedua servo tertutup.\n\n// ============================================\n// 14. KIRIM PERINTAH KE ESP32\n// ============================================\n\nmsg.payload = {\n\n    status: st.status,\n\n    fan1: fan1 ? 1 : 0,\n    fan2: fan2 ? 1 : 0,\n    fan3: fan3 ? 1 : 0,\n    fan4: fan4 ? 1 : 0,\n\n    buzzer: buzzer ? 1 : 0,\n\n    servo1: servo1,\n    servo2: servo2,\n\n    alarm_source: alarmSource,\n\n    smoke_delta: dSmoke,\n    air_delta: dAir,\n    co_delta: dCo,\n\n    flame: api ? 1 : 0,\n    temp: temp\n};\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 750,
+        "y": 600,
+        "wires": [
+            [
+                "d98c4768d911c953",
+                "02064da02a1ecab2"
+            ]
+        ]
+    },
+    {
+        "id": "d98c4768d911c953",
+        "type": "mqtt out",
+        "z": "0f96f0a0cac21be3",
+        "name": "Keputusan aktuator",
+        "topic": "smoke/room1/aktuator",
+        "qos": "0",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "mqtt_broker",
+        "x": 990,
+        "y": 560,
+        "wires": []
+    },
+    {
+        "id": "fbc31233634da581",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 3",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 660,
+        "y": 740,
+        "wires": []
+    },
+    {
+        "id": "02064da02a1ecab2",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 4",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 960,
+        "y": 660,
+        "wires": []
+    },
+    {
+        "id": "e8a19822c3fa6298",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Deteksi Pendaftaran",
+        "func": "\nconst chatId = String(\n    msg.originalMessage?.chat?.id || \"\"\n);\n\nmsg.telegramChatId = chatId;\n\nconst type = msg.payload?.type;\nconst content = msg.payload?.content;\n\n// Simpan semua pesan Telegram untuk dipulihkan\n// setelah pemeriksaan status akun\nif (type === \"message\") {\n    msg.telegramCommand = {\n        ...msg.payload\n    };\n\n    return [msg, null];\n}\n\n// Pengiriman kontak tetap masuk jalur pendaftaran\nif (type === \"contact\") {\n    return [null, msg];\n}\n\n// Abaikan pesan lainnya\nreturn null;\n",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1360,
+        "y": 300,
+        "wires": [
+            [
+                "0e517b4538517ebe",
+                "ca21a09fd5b232f8"
+            ],
+            [
+                "e0dae84a1d53c5b1",
+                "a751f5102c39f50a"
+            ]
+        ]
+    },
+    {
+        "id": "0e517b4538517ebe",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Query Cek Akun Telegram",
+        "func": "const chatId = String(msg.telegramChatId);\n\nmsg.topic = `\n    SELECT chat_id, status\n    FROM telegram_users\n    WHERE chat_id = :chatId\n`;\n\nmsg.payload = {\n    chatId: chatId\n};\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1690,
+        "y": 280,
+        "wires": [
+            [
+                "4b1d172ce35d4fa1",
+                "facb4ece987294fa"
+            ]
+        ]
+    },
+    {
+        "id": "8f1e0ead396911ba",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Proses Status Akun",
+        "func": "\nconst rows = msg.payload || [];\nconst chatId = String(msg.telegramChatId);\n\n// Validasi hasil SELECT\nif (!Array.isArray(rows)) {\n    node.error(\n        \"Hasil SELECT bukan array: \" +\n        JSON.stringify(rows),\n        msg\n    );\n    return null;\n}\n\n// =====================================\n// AKUN BELUM TERDAFTAR\n// =====================================\n\nif (rows.length === 0) {\n    msg.payload = {\n        chatId: chatId,\n        type: \"message\",\n        content: \"Halo!\\n\\nAkun Telegram kamu belum terdaftar.\\nSilakan tekan tombol di bawah untuk mendaftar.\",\n        options: {\n            reply_markup: JSON.stringify({\n                keyboard: [[\n                    {\n                        text: \"Bagikan Nomor HP Saya\",\n                        request_contact: true\n                    }\n                ]],\n                resize_keyboard: true,\n                one_time_keyboard: true\n            })\n        }\n    };\n\n    return [msg, null];\n}\n\nconst akun = rows[0];\n\n// =====================================\n// AKUN AKTIF\n// =====================================\n\nif (akun.status === \"active\") {\n\n    // Pulihkan pesan asli Telegram\n    msg.payload = msg.telegramCommand;\n\n    // Teruskan ke Function Perintah Telegram\n    return [null, msg];\n}\n\n// =====================================\n// AKUN PENDING\n// =====================================\n\nif (akun.status === \"pending\") {\n    msg.payload = {\n        chatId: chatId,\n        type: \"message\",\n        content: \"⏳ Pendaftaran kamu masih menunggu persetujuan admin.\"\n    };\n\n    return [msg, null];\n}\n\n// =====================================\n// AKUN REJECTED\n// =====================================\n\nmsg.payload = {\n    chatId: chatId,\n    type: \"message\",\n    content: \"❌ Pendaftaran kamu ditolak. Hubungi administrator.\"\n};\n\nreturn [msg, null];\n",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2190,
+        "y": 280,
+        "wires": [
+            [
+                "d5ced602612e4cec",
+                "c51683ef3fd072b7"
+            ],
+            [
+                "c8dfdbeb57f31b35",
+                "286feace8c2a5c0b"
+            ]
+        ]
+    },
+    {
+        "id": "4b1d172ce35d4fa1",
+        "type": "Stackhero-MySQL",
+        "z": "0f96f0a0cac21be3",
+        "server": "ffcddba4bffa7d66",
+        "name": "",
+        "x": 1950,
+        "y": 280,
+        "wires": [
+            [
+                "8f1e0ead396911ba"
+            ]
+        ]
+    },
+    {
+        "id": "e0dae84a1d53c5b1",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Validasi & Simpan Kontak",
+        "func": "// =====================================\n// 1. AMBIL DATA TELEGRAM\n// =====================================\n\nconst chatId = String(\n    msg.telegramChatId ||\n    msg.originalMessage?.chat?.id ||\n    msg.payload?.chatId ||\n    \"\"\n);\n\n// Ambil data kontak\nconst contact =\n    msg.payload?.content ||\n    msg.content ||\n    msg.originalMessage?.contact ||\n    {};\n\n\n// =====================================\n// 2. VALIDASI DATA KONTAK\n// =====================================\n\nif (!chatId || !contact.phone_number) {\n\n    node.warn(\"Data kontak tidak lengkap: \" + JSON.stringify({\n        chatId: chatId,\n        contact: contact\n    }));\n\n    msg.payload = {\n        chatId: chatId,\n        type: \"message\",\n        content: \"❌ Data nomor HP tidak terbaca. Silakan bagikan kembali.\"\n    };\n\n    return [null, msg];\n}\n\n\n// =====================================\n// 3. VALIDASI PEMILIK NOMOR\n// =====================================\n\nif (\n    !contact.user_id ||\n    String(contact.user_id) !== chatId\n) {\n    msg.payload = {\n        chatId: chatId,\n        type: \"message\",\n        content: \"❌ Pendaftaran gagal. Silakan bagikan nomor HP milik sendiri.\"\n    };\n\n    return [null, msg];\n}\n\n\n// =====================================\n// 4. SIMPAN DATA PENDAFTARAN SEMENTARA\n// =====================================\n\n// BAGIAN BARU YANG DITAMBAHKAN\nmsg.registration = {\n    chatId: chatId,\n    phone: contact.phone_number,\n    firstName: contact.first_name || \"\"\n};\n\n\n// =====================================\n// 5. QUERY INSERT MYSQL\n// =====================================\n\nmsg.topic = `\n    INSERT INTO telegram_users\n    (chat_id, phone_number, first_name, status)\n    VALUES\n    (:chatId, :phone, :firstName, 'pending')\n    ON DUPLICATE KEY UPDATE\n        phone_number = VALUES(phone_number),\n        first_name = VALUES(first_name),\n        status = IF(status = 'active', 'active', 'pending')\n`;\n\nmsg.payload = {\n    chatId: chatId,\n    phone: contact.phone_number,\n    firstName: contact.first_name || \"\"\n};\n\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1690,
+        "y": 340,
+        "wires": [
+            [
+                "1d4374a6921eac06"
+            ],
+            [
+                "d5ced602612e4cec"
+            ]
+        ]
+    },
+    {
+        "id": "f4d9dce7e6a75008",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Balasan Pendaftaran",
+        "func": "const chatId = String(\n    msg.telegramChatId ||\n    msg.originalMessage?.chat?.id ||\n    \"\"\n);\n\nmsg.payload = {\n    chatId: chatId,\n    type: \"message\",\n    content: \"✅ Pendaftaran berhasil!\\n\\nNomor HP kamu sudah tersimpan dan sedang menunggu persetujuan admin.\\n\\nKamu akan mendapatkan akses setelah admin mengaktifkan akun.\"\n};\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2260,
+        "y": 360,
+        "wires": [
+            [
+                "d5ced602612e4cec"
+            ]
+        ]
+    },
+    {
+        "id": "1d4374a6921eac06",
+        "type": "Stackhero-MySQL",
+        "z": "0f96f0a0cac21be3",
+        "server": "ffcddba4bffa7d66",
+        "name": "",
+        "x": 1950,
+        "y": 360,
+        "wires": [
+            [
+                "f4d9dce7e6a75008",
+                "657edb2cc84ee870"
+            ]
+        ]
+    },
+    {
+        "id": "c51683ef3fd072b7",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 6",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2500,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "c8dfdbeb57f31b35",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 7",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2500,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "facb4ece987294fa",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 8",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1920,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "ca21a09fd5b232f8",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 9",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1540,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "a751f5102c39f50a",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 10",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1460,
+        "y": 380,
+        "wires": []
+    },
+    {
+        "id": "657edb2cc84ee870",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "Notifikasi Admin",
+        "func": "\n// =====================================\n// NOTIFIKASI PENDAFTARAN ADMIN\n// =====================================\n\nconst data = msg.registration;\n\nif (!data || !data.chatId) {\n    node.error(\"Data pendaftaran tidak ditemukan\", msg);\n    return null;\n}\n\nconst userChatId = String(data.chatId);\n\n// =====================================\n// TOMBOL INLINE TELEGRAM\n// =====================================\n\nconst keyboard = {\n    inline_keyboard: [\n        [\n            {\n                text: \"✅ SETUJUI\",\n                callback_data: \"REG_APPROVE:\" + userChatId\n            },\n            {\n                text: \"❌ TOLAK\",\n                callback_data: \"REG_REJECT:\" + userChatId\n            }\n        ]\n    ]\n};\n\n// =====================================\n// PESAN UNTUK ADMIN\n// =====================================\n\nmsg.payload = {\n    chatId: \"1834826609\",\n    type: \"message\",\n\n    content:\n        \"🔔 PENDAFTARAN BARU\\n\\n\" +\n        \"Nama: \" + (data.firstName || \"-\") + \"\\n\" +\n        \"Nomor HP: \" + (data.phone || \"-\") + \"\\n\" +\n        \"Chat ID: \" + userChatId + \"\\n\" +\n        \"Status: Menunggu persetujuan\\n\\n\" +\n        \"Silakan pilih tindakan:\",\n\n    options: {\n        reply_markup: JSON.stringify(keyboard)\n    }\n};\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2240,
+        "y": 440,
+        "wires": [
+            [
+                "d5ced602612e4cec"
+            ]
+        ]
+    },
+    {
+        "id": "8a73428529714041",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "deteksi perintah admin",
+        "func": "\n// =====================================\n// 1. AMBIL ID PENGIRIM ADMIN\n// =====================================\n\nconst senderId = String(\n    msg.telegramSenderId ||\n    msg.originalMessage?.from?.id ||\n    msg.originalMessage?.chat?.id ||\n    \"\"\n);\n\n// =====================================\n// 2. AMBIL ISI PERINTAH\n// =====================================\n\nconst command = String(\n    msg.adminCommandText ||\n    msg.originalMessage?.text ||\n    msg.payload?.content ||\n    \"\"\n).trim();\n\nnode.warn(\"ISI COMMAND: \" + command);\nnode.warn(\"SENDER ID: \" + senderId);\n\n// =====================================\n// 3. DETEKSI PERINTAH ADMIN\n// =====================================\n\nconst match = command.match(\n    /^\\/(setujui|tolak)(?:@\\w+)?(?:\\s+(\\d+))?$/i\n);\n\n// Bukan perintah admin\nif (!match) {\n    return [null, null, msg];\n}\n\n// =====================================\n// 4. VALIDASI FORMAT\n// =====================================\n\nif (!match[2]) {\n    msg.payload = {\n        chatId: senderId,\n        type: \"message\",\n        content:\n            \"Format perintah salah.\\n\\n\" +\n            \"Gunakan:\\n\" +\n            \"/setujui CHAT_ID\\n\" +\n            \"/tolak CHAT_ID\"\n    };\n\n    return [null, msg, null];\n}\n\n// =====================================\n// 5. VALIDASI ADMIN\n// =====================================\n\nconst ADMIN_ID = \"1834826609\";\n\nif (senderId !== ADMIN_ID) {\n    msg.payload = {\n        chatId: senderId,\n        type: \"message\",\n        content:\n            \"❌ Kamu tidak memiliki izin \" +\n            \"menjalankan perintah admin.\"\n    };\n\n    return [null, msg, null];\n}\n\n// =====================================\n// 6. SIMPAN DATA KEPUTUSAN\n// =====================================\n\nconst action = match[1].toLowerCase();\nconst targetId = match[2];\n\nmsg.adminData = {\n    action: action,\n    targetId: targetId,\n    adminId: senderId\n};\n\n// =====================================\n// 7. SIAPKAN QUERY MYSQL\n// =====================================\n\nif (action === \"setujui\") {\n\n    // Ubah pending menjadi active\n    msg.topic = `\n        UPDATE telegram_users\n        SET status = 'active'\n        WHERE chat_id = :chatId\n        AND status = 'pending'\n    `;\n\n} else {\n\n    // Hapus data yang masih pending\n    msg.topic = `\n        DELETE FROM telegram_users\n        WHERE chat_id = :chatId\n        AND status = 'pending'\n    `;\n}\n\nmsg.payload = {\n    chatId: targetId\n};\n\nnode.warn(\n    \"KEPUTUSAN ADMIN: \" +\n    JSON.stringify(msg.adminData)\n);\n\nnode.warn(\n    \"QUERY MYSQL: \" + msg.topic\n);\n\n// =====================================\n// 8. KIRIM KE MYSQL (OUTPUT 1)\n// =====================================\n\nreturn [msg, null, null];\n",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2140,
+        "y": 620,
+        "wires": [
+            [
+                "a8f450ed0c8a241c",
+                "59a2fc4599b94801"
+            ],
+            [
+                "d5ced602612e4cec"
+            ],
+            [
+                "286feace8c2a5c0b"
+            ]
+        ]
+    },
+    {
+        "id": "a8f450ed0c8a241c",
+        "type": "Stackhero-MySQL",
+        "z": "0f96f0a0cac21be3",
+        "server": "ffcddba4bffa7d66",
+        "name": "",
+        "x": 2430,
+        "y": 580,
+        "wires": [
+            [
+                "aabccb1027d78bd4",
+                "add265b34a197b8d"
+            ]
+        ]
+    },
+    {
+        "id": "a9abbedacf3829f7",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 11",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1680,
+        "y": 480,
+        "wires": []
+    },
+    {
+        "id": "aabccb1027d78bd4",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "konfirmasi admin",
+        "func": "\n// =====================================\n// 1. AMBIL DATA KEPUTUSAN\n// =====================================\n\nconst data = msg.adminData || {};\nconst action = data.action;\nconst targetId = String(data.targetId || \"\");\n\nif (!targetId || ![\"setujui\", \"tolak\"].includes(action)) {\n    node.error(\"Data keputusan admin tidak lengkap\", msg);\n    return null;\n}\n\n// =====================================\n// 2. PERIKSA HASIL MYSQL\n// =====================================\n\n// Stackhero MySQL dapat menempatkan hasil\n// query pada msg.payload.\nconst hasil = msg.payload || {};\n\nconst affectedRows = Number(\n    hasil.affectedRows ??\n    msg.affectedRows ??\n    0\n);\n\n// =====================================\n// 3. JIKA QUERY GAGAL\n// =====================================\n\nif (msg.error) {\n\n    msg.payload = {\n        chatId: data.adminId || \"1834826609\",\n        type: \"message\",\n        content:\n            \"❌ Gagal memproses akun \" +\n            targetId +\n            \". Periksa koneksi database.\"\n    };\n\n    return msg;\n}\n\n// =====================================\n// 4. JIKA AKUN TIDAK DITEMUKAN\n// =====================================\n\nif (affectedRows !== 1) {\n\n    msg.payload = {\n        chatId: data.adminId || \"1834826609\",\n        type: \"message\",\n        content:\n            \"⚠️ Akun \" + targetId +\n            \" tidak ditemukan atau sudah diproses sebelumnya.\\n\\n\" +\n            \"Pastikan akun masih berstatus pending.\"\n    };\n\n    return msg;\n}\n\n// =====================================\n// 5. SIAPKAN NOTIFIKASI ADMIN\n// =====================================\n\nconst pesanAdmin = {\n    payload: {\n        chatId: data.adminId || \"1834826609\",\n        type: \"message\",\n        content: action === \"setujui\"\n            ? \"✅ Akun \" + targetId +\n            \" berhasil diterima dan diaktifkan.\"\n            : \"❌ Akun \" + targetId +\n            \" berhasil ditolak dan datanya telah dihapus.\"\n    }\n};\n\n// =====================================\n// 6. SIAPKAN NOTIFIKASI PENGGUNA\n// =====================================\n\nlet pesanPengguna;\n\nif (action === \"setujui\") {\n\n    pesanPengguna = {\n        payload: {\n            chatId: targetId,\n            type: \"message\",\n            content:\n                \"🎉 SELAMAT! PENDAFTARAN DITERIMA\\n\\n\" +\n                \"Permohonan akun Telegram kamu telah \" +\n                \"disetujui oleh admin.\\n\\n\" +\n                \"Sekarang akun kamu sudah aktif dan dapat \" +\n                \"menggunakan layanan monitoring \" +\n                \"Smart Smoke Detection.\\n\\n\" +\n                \"Ketik /help untuk melihat perintah yang tersedia.\"\n        }\n    };\n\n} else {\n\n    pesanPengguna = {\n        payload: {\n            chatId: targetId,\n            type: \"message\",\n            content:\n                \"❌ MOHON MAAF, PENDAFTARAN DITOLAK\\n\\n\" +\n                \"Permohonan akun Telegram kamu belum \" +\n                \"dapat disetujui oleh admin.\\n\\n\" +\n                \"Data pendaftaran yang berstatus pending \" +\n                \"telah dihapus dari sistem.\"\n        }\n    };\n\n}\n\n// =====================================\n// 7. KIRIM KEDUA PESAN\n// =====================================\n\n// Output 1 berisi dua pesan untuk Telegram Sender\nreturn [[pesanAdmin, pesanPengguna]];\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2670,
+        "y": 580,
+        "wires": [
+            [
+                "d5ced602612e4cec"
+            ]
+        ]
+    },
+    {
+        "id": "add265b34a197b8d",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 12",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2680,
+        "y": 660,
+        "wires": []
+    },
+    {
+        "id": "59a2fc4599b94801",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 13",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2400,
+        "y": 700,
+        "wires": []
+    },
+    {
+        "id": "a28fc895f11c5635",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "siapkan notifikasi",
+        "func": "\nconst T = String(msg.topic || \"\");\n\n// ==================================\n// 1. SIMPAN DATA SENSOR TERAKHIR\n// ==================================\n\nif (T.endsWith(\"/sensor\")) {\n    if (msg.payload && typeof msg.payload === \"object\") {\n        flow.set(\"sensorTerakhir\", msg.payload);\n    }\n\n    return null;\n}\n\n// ==================================\n// 2. DATA SENSOR UNTUK NOTIFIKASI\n// ==================================\n\nconst d = flow.get(\"sensorTerakhir\") || {};\n\nconst ringkas = [\n    \"Suhu: \" + (d.temp ?? \"-\") + \" °C | Kelembapan: \" + (d.hum ?? \"-\") + \" %\",\n    \"LPG (ADC): \" + (d.smoke ?? \"-\") +\n    \" | Udara (ADC): \" + (d.air ?? \"-\") +\n    \" | CO (ADC): \" + (d.co ?? \"-\"),\n    \"Api: \" + (d.flame ? \"TERDETEKSI\" : \"tidak ada\")\n].join(\"\\n\");\n\nconst waktu = new Date().toLocaleString(\"id-ID\", {\n    timeZone: \"Asia/Jakarta\",\n    hour12: false\n});\n\n// ==================================\n// 3. CEK PERUBAHAN STATUS\n// ==================================\n\nif (T.endsWith(\"/status\")) {\n\n    const s = msg.payload;\n\n    if (!s || typeof s !== \"object\" || !s.status) {\n        return null;\n    }\n\n    flow.set(\"statusTerakhir\", s);\n\n    const lalu = flow.get(\"tgStatus\");\n\n    flow.set(\"tgStatus\", s.status);\n\n    // Abaikan status pertama setelah Deploy\n    if (lalu === undefined || lalu === s.status) {\n        return null;\n    }\n\n    let judul;\n\n    if (s.status === \"BAHAYA\") {\n        judul = \"🚨 BAHAYA terdeteksi!\";\n    }\n    else if (s.status === \"WASPADA\" && lalu === \"BAHAYA\") {\n        judul = \"⚠️ Bahaya mereda, masih WASPADA\";\n    }\n    else if (s.status === \"WASPADA\") {\n        judul = \"⚠️ WASPADA: kualitas udara memburuk\";\n    }\n    else if (s.status === \"AMAN\") {\n        judul = \"✅ Kondisi kembali AMAN\";\n    }\n    else {\n        return null;\n    }\n\n    const aks =\n        \"Kipas: \" + (s.fan ? \"ON\" : \"OFF\") +\n        \" | Buzzer: \" + (s.buzzer ? \"ON\" : \"OFF\") +\n        \" | Servo: \" + (s.servo ? \"BUKA\" : \"TUTUP\") +\n        \" | Mode: \" + (s.mode || \"-\");\n\n    msg.notifText = [\n        judul,\n        ringkas,\n        aks,\n        waktu\n    ].join(\"\\n\");\n}\n\n// ==================================\n// 4. CEK ONLINE / OFFLINE\n// ==================================\n\nelse if (T.endsWith(\"/online\")) {\n\n    const on = String(msg.payload).toLowerCase() === \"online\";\n\n    const lalu = flow.get(\"tgOnline\");\n\n    flow.set(\"tgOnline\", on);\n\n    // Abaikan status pertama setelah Deploy\n    if (lalu === undefined || lalu === on) {\n        return null;\n    }\n\n    msg.notifText = on\n        ? \"✅ ESP32 online kembali\\n\" + waktu\n        : \"🔌 ESP32 OFFLINE: pemantauan terhenti!\\n\" + waktu;\n}\n\nelse {\n    return null;\n}\n\n// ==================================\n// 5. AMBIL DAFTAR PENERIMA\n// ==================================\n\nmsg.topic = `\n    SELECT chat_id\n    FROM telegram_users\n    WHERE status = 'active'\n    AND chat_id IS NOT NULL\n    AND chat_id <> ''\n`;\n\nmsg.payload = {};\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 770,
+        "y": 380,
+        "wires": [
+            [
+                "f507db3b8dd44cfc"
+            ]
+        ]
+    },
+    {
+        "id": "f507db3b8dd44cfc",
+        "type": "Stackhero-MySQL",
+        "z": "0f96f0a0cac21be3",
+        "server": "ffcddba4bffa7d66",
+        "name": "",
+        "x": 1010,
+        "y": 320,
+        "wires": [
+            [
+                "132ef190b1163479"
+            ]
+        ]
+    },
+    {
+        "id": "132ef190b1163479",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "format pesan telegram",
+        "func": "\nconst rows = msg.payload || [];\n\n// Pastikan hasil query berupa array\nif (!Array.isArray(rows)) {\n    node.error(\n        \"Hasil query penerima bukan array: \" +\n        JSON.stringify(rows),\n        msg\n    );\n\n    return null;\n}\n\n// Ambil semua akun yang aktif\nconst chatIds = rows\n    .map(row => String(row.chat_id || \"\").trim())\n    .filter(id => id !== \"\");\n\n// Jika tidak ada penerima\nif (chatIds.length === 0) {\n    node.warn(\"Belum ada akun Telegram aktif\");\n    return null;\n}\n\n// Buat pesan untuk setiap penerima\nconst messages = chatIds.map(id => ({\n    payload: {\n        chatId: id,\n        type: \"message\",\n        content: msg.notifText\n    }\n}));\n\n// Satu output, banyak pesan\nreturn [messages];\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1420,
+        "y": 160,
+        "wires": [
+            [
+                "d5ced602612e4cec"
+            ]
+        ]
+    },
+    {
+        "id": "45c9fec2bf7297dc",
+        "type": "ui-switch",
+        "z": "0f96f0a0cac21be3",
+        "name": "KIPAS 1",
+        "label": "KIPAS 1",
+        "group": "grp_ctrl",
+        "order": 4,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "decouple": false,
+        "topic": "T_CONTROL",
+        "topicType": "msg",
+        "style": "",
+        "className": "",
+        "layout": "row-spread",
+        "clickableArea": "switch",
+        "onvalue": "FAN1_ON",
+        "onvalueType": "str",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "FAN1_OFF",
+        "offvalueType": "str",
+        "officon": "",
+        "offcolor": "",
+        "x": 1420,
+        "y": 1100,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "052b98d62e321acf",
+        "type": "ui-switch",
+        "z": "0f96f0a0cac21be3",
+        "name": "KIPAS 2",
+        "label": "KIPAS 2",
+        "group": "grp_ctrl",
+        "order": 5,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "decouple": false,
+        "topic": "T_CONTROL",
+        "topicType": "msg",
+        "style": "",
+        "className": "",
+        "layout": "row-spread",
+        "clickableArea": "switch",
+        "onvalue": "FAN2_ON",
+        "onvalueType": "str",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "FAN2_OFF",
+        "offvalueType": "str",
+        "officon": "",
+        "offcolor": "",
+        "x": 1420,
+        "y": 1280,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "5c2e16e2077ca340",
+        "type": "ui-switch",
+        "z": "0f96f0a0cac21be3",
+        "name": "KIPAS 3",
+        "label": "KIPAS 3",
+        "group": "grp_ctrl",
+        "order": 6,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "decouple": false,
+        "topic": "T_CONTROL",
+        "topicType": "msg",
+        "style": "",
+        "className": "",
+        "layout": "row-spread",
+        "clickableArea": "switch",
+        "onvalue": "FAN3_ON",
+        "onvalueType": "str",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "FAN3_OFF",
+        "offvalueType": "str",
+        "officon": "",
+        "offcolor": "",
+        "x": 1420,
+        "y": 1160,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "8654952d58c163a0",
+        "type": "ui-switch",
+        "z": "0f96f0a0cac21be3",
+        "name": "KIPAS 4",
+        "label": "KIPAS 4",
+        "group": "grp_ctrl",
+        "order": 7,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "decouple": false,
+        "topic": "T_CONTROL",
+        "topicType": "msg",
+        "style": "",
+        "className": "",
+        "layout": "row-spread",
+        "clickableArea": "switch",
+        "onvalue": "FAN4_ON",
+        "onvalueType": "str",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "FAN4_OFF",
+        "offvalueType": "str",
+        "officon": "",
+        "offcolor": "",
+        "x": 1420,
+        "y": 1220,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "22522dc642a10c06",
+        "type": "ui-switch",
+        "z": "0f96f0a0cac21be3",
+        "name": "SERVO 1",
+        "label": "SERVO 1",
+        "group": "grp_ctrl",
+        "order": 8,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "decouple": false,
+        "topic": "T_CONTROL",
+        "topicType": "msg",
+        "style": "",
+        "className": "",
+        "layout": "row-spread",
+        "clickableArea": "switch",
+        "onvalue": "SERVO1_OPEN",
+        "onvalueType": "str",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "SERVO1_CLOSE",
+        "offvalueType": "str",
+        "officon": "",
+        "offcolor": "",
+        "x": 1440,
+        "y": 1340,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "0a066056ee86385d",
+        "type": "ui-switch",
+        "z": "0f96f0a0cac21be3",
+        "name": "SERVO 2",
+        "label": "SERVO 2",
+        "group": "grp_ctrl",
+        "order": 9,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "decouple": false,
+        "topic": "T_CONTROL",
+        "topicType": "msg",
+        "style": "",
+        "className": "",
+        "layout": "row-spread",
+        "clickableArea": "switch",
+        "onvalue": "SERVO2_OPEN",
+        "onvalueType": "str",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "SERVO2_CLOSE",
+        "offvalueType": "str",
+        "officon": "",
+        "offcolor": "",
+        "x": 1440,
+        "y": 1400,
+        "wires": [
+            [
+                "4d72d30825b85c2d"
+            ]
+        ]
+    },
+    {
+        "id": "e75a0bcc83b7fd55",
+        "type": "function",
+        "z": "0f96f0a0cac21be3",
+        "name": "proses tombol admin",
+        "func": "\nconst p = msg.payload || {};\n\n// Ambil identitas pengirim tombol\nconst senderId = String(\n    msg.originalMessage?.from?.id ||\n    p.chatId ||\n    \"\"\n);\n\n// ID admin yang diizinkan\nconst ADMIN_ID = \"1834826609\";\n\n// Validasi admin\nif (senderId !== ADMIN_ID) {\n    node.warn(\"Tombol ditekan bukan oleh admin\");\n    return null;\n}\n\n// Ambil callback_data\nconst callback = String(p.content || \"\");\n\n// Baca keputusan\nconst match = callback.match(\n    /^(REG_APPROVE|REG_REJECT):(\\d+)$/\n);\n\nif (!match) {\n    node.warn(\"Callback tidak dikenal: \" + callback);\n    return null;\n}\n\nconst aksi = match[1];\nconst userChatId = match[2];\n\n// Terjemahkan tombol menjadi perintah admin\nmsg.telegramSenderId = senderId;\n\nmsg.adminCommandText =\n    aksi === \"REG_APPROVE\"\n        ? \"/setujui \" + userChatId\n        : \"/tolak \" + userChatId;\n\n// Teruskan ke Function deteksi perintah admin\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2000,
+        "y": 700,
+        "wires": [
+            [
+                "8a73428529714041"
+            ]
+        ]
+    },
+    {
+        "id": "58444fb9908bb34e",
+        "type": "telegram event",
+        "z": "0f96f0a0cac21be3",
+        "name": "",
+        "bot": "tg_bot",
+        "event": "callback_query",
+        "autoanswer": true,
+        "x": 1880,
+        "y": 780,
+        "wires": [
+            [
+                "e75a0bcc83b7fd55"
+            ]
+        ]
+    },
+    {
+        "id": "aad598a225f12795",
+        "type": "ui-table",
+        "z": "0f96f0a0cac21be3",
+        "g": "2f44b11b7058fdba",
+        "group": "4a2128e88ea93a5f",
+        "name": "Log Event",
+        "label": "",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "maxrows": "10",
+        "passthru": false,
+        "autocols": true,
+        "showSearch": true,
+        "deselect": true,
+        "selectionType": "none",
+        "columns": [],
+        "mobileBreakpoint": "sm",
+        "mobileBreakpointType": "defaults",
+        "action": "replace",
+        "className": "",
+        "x": 1220,
+        "y": 1160,
+        "wires": [
+            []
+        ],
+        "inputLabels": [
+            "function 6"
+        ]
+    },
+    {
+        "id": "9aac948d58afe717",
+        "type": "debug",
+        "z": "0f96f0a0cac21be3",
+        "name": "debug 5",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1140,
+        "y": 1380,
+        "wires": []
+    },
+    {
+        "id": "mqtt_broker",
+        "type": "mqtt-broker",
+        "name": "Broker MQTT (ubah host/port di sini)",
+        "broker": "localhost",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "grp_gas",
+        "type": "ui-group",
+        "name": "Sensor Gas",
+        "page": "ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 2,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "grp_th",
+        "type": "ui-group",
+        "name": "Suhu & Kelembapan",
+        "page": "ui_page",
+        "width": "6",
+        "height": "1",
+        "order": 3,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "grp_chart_gas",
+        "type": "ui-group",
+        "name": "Grafik Gas",
+        "page": "ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 5,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "grp_chart_th",
+        "type": "ui-group",
+        "name": "Grafik Suhu & Kelembapan",
+        "page": "ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 6,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "grp_status",
+        "type": "ui-group",
+        "name": "Status Ruangan",
+        "page": "ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 1,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "grp_log",
+        "type": "ui-group",
+        "name": "Log Kejadian",
+        "page": "ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 7,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default"
+    },
+    {
+        "id": "grp_ctrl",
+        "type": "ui-group",
+        "name": "Kontrol Kipas",
+        "page": "ui_page",
+        "width": "6",
+        "height": "1",
+        "order": 4,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default",
+        "tab": ""
+    },
+    {
+        "id": "ffcddba4bffa7d66",
+        "type": "Stackhero-MySQL-Server",
+        "name": "",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "tls": false,
+        "database": "smoke_db"
+    },
+    {
+        "id": "82345f19c221f245",
+        "type": "ui-group",
+        "name": "Sensor Log",
+        "page": "514e70e7d728a343",
+        "width": 6,
+        "height": 1,
+        "order": 3,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default",
+        "tab": ""
+    },
+    {
+        "id": "6fb022c7c7a3b187",
+        "type": "ui-group",
+        "name": "dropdown",
+        "page": "514e70e7d728a343",
+        "width": 12,
+        "height": 1,
+        "order": 1,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default",
+        "tab": ""
+    },
+    {
+        "id": "tg_bot",
+        "type": "telegram bot",
+        "botname": "smart_smoke_and_ventilation_bot",
+        "usernames": "",
+        "chatids": "",
+        "baseapiurl": "",
+        "testenvironment": false,
+        "updatemode": "polling",
+        "pollinterval": "300",
+        "usesocks": false,
+        "sockshost": "",
+        "socksport": "",
+        "socksusername": "",
+        "sockspassword": "",
+        "bothost": "",
+        "botpath": "",
+        "localbothost": "",
+        "localbotport": "",
+        "publicbotport": "",
+        "privatekey": "",
+        "certificate": "",
+        "useselfsignedcertificate": false,
+        "sslterminated": false,
+        "verboselogging": false
+    },
+    {
+        "id": "4a2128e88ea93a5f",
+        "type": "ui-group",
+        "name": "Event log",
+        "page": "514e70e7d728a343",
+        "width": 6,
+        "height": 1,
+        "order": 2,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false",
+        "groupType": "default",
+        "tab": ""
+    },
+    {
+        "id": "ui_page",
+        "type": "ui-page",
+        "name": "Smoke Monitor",
+        "ui": "0cec01e7a0bc807b",
+        "path": "/monitor",
+        "icon": "home",
+        "layout": "grid",
+        "theme": "ui_theme_dark",
+        "breakpoints": [
+            {
+                "name": "Default",
+                "px": "0",
+                "cols": "3"
+            },
+            {
+                "name": "Tablet",
+                "px": "576",
+                "cols": "6"
+            },
+            {
+                "name": "Small Desktop",
+                "px": "768",
+                "cols": "9"
+            },
+            {
+                "name": "Desktop",
+                "px": "1024",
+                "cols": "12"
+            }
+        ],
+        "tabs": [],
+        "order": 1,
+        "className": "",
+        "visible": true,
+        "disabled": false
+    },
+    {
+        "id": "514e70e7d728a343",
+        "type": "ui-page",
+        "name": "Riwayat",
+        "ui": "0cec01e7a0bc807b",
+        "path": "/Riwayat",
+        "icon": "",
+        "layout": "grid",
+        "theme": "ui_theme_dark",
+        "breakpoints": [
+            {
+                "name": "Default",
+                "px": "0",
+                "cols": "3"
+            },
+            {
+                "name": "Tablet",
+                "px": "576",
+                "cols": "6"
+            },
+            {
+                "name": "Small Desktop",
+                "px": "768",
+                "cols": "9"
+            },
+            {
+                "name": "Desktop",
+                "px": "1024",
+                "cols": "12"
+            }
+        ],
+        "tabs": [],
+        "order": 2,
+        "className": "",
+        "visible": true,
+        "disabled": false
+    },
+    {
+        "id": "0cec01e7a0bc807b",
+        "type": "ui-base",
+        "name": "My Dashboard",
+        "path": "/dashboard",
+        "appIcon": "",
+        "includeClientData": true,
+        "acceptsClientConfig": [
+            "ui-notification",
+            "ui-control"
+        ],
+        "showPathInSidebar": false,
+        "headerContent": "page",
+        "navigationStyle": "default",
+        "titleBarStyle": "default",
+        "showReconnectNotification": true,
+        "notificationDisplayTime": 1,
+        "showDisconnectNotification": true,
+        "allowInstall": false
+    },
+    {
+        "id": "ui_theme_dark",
+        "type": "ui-theme",
+        "name": "Tema Gelap",
+        "colors": {
+            "surface": "#1f2329",
+            "primary": "#4dabf7",
+            "bgPage": "#0f1216",
+            "groupBg": "#1b1f24",
+            "groupOutline": "#2d333b"
+        },
+        "sizes": {
+            "pagePadding": "12px",
+            "groupGap": "12px",
+            "groupBorderRadius": "6px",
+            "widgetGap": "12px"
+        }
+    },
+    {
+        "id": "7e08d4f890fd82ac",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "@flowfuse/node-red-dashboard": "1.33.0",
+            "node-red-contrib-stackhero-mysql": "1.0.5",
+            "node-red-contrib-telegrambot": "19.0.3"
+        }
+    }
+]
