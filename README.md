@@ -31,7 +31,7 @@ Fungsi utama:
 | Berkas | Keterangan |
 |--------|------------|
 | `Smart_Smoke_Detection_WiFiManager_NodeRED.ino` | Firmware ESP32 |
-| `flows.json` | Flow Node-RED (diimpor lewat menu Import) |
+| `node-red.json` | Flow Node-RED (diimpor lewat menu Import) |
 | `Pengujian_Komponen/` | Sketch uji per komponen (MQ-2, MQ-135, MQ-7, Flame, DHT22, Relay, Buzzer, Servo, WiFi/MQTT) |
 
 ## Perangkat Keras dan Pin ESP32
