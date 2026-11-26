@@ -22,13 +22,13 @@
   const char* WIFI_AP_PASS = "infokopag";  // ubah menjadi password unik (minimal 8 karakter)
 
   // Broker MQTT dapat diubah dari dashboard Node-RED dan disimpan di NVS.
-  char mqttHost[64] = "43.173.27.166";  // nilai awal jika belum pernah dikonfigurasi
-  uint16_t mqttPort = 1883;
+  char mqttHost[64] = "";  // nilai awal jika belum pernah dikonfigurasi
+  uint16_t mqttPort = ;
 
   // Kredensial autentikasi broker tetap seperti konfigurasi awal.
   // Ganti jika username/password broker Anda berbeda.
-  const char* MQTT_USER = "nodered";
-  const char* MQTT_PASS = "noderedpass";
+  const char* MQTT_USER = "";
+  const char* MQTT_PASS = "";
   const char* DEVICE_ID = "esp32-smoke-01";
 
   Preferences networkPrefs;
