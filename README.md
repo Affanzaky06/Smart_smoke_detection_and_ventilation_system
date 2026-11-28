@@ -13,7 +13,7 @@ Fungsi utama:
 - **Deteksi berbasis delta ADC**: nilai sensor dibandingkan dengan baseline hasil kalibrasi udara bersih.
 - **Mode hybrid**: saat ESP32 terhubung ke Node-RED, keputusan diambil di Node-RED (mode CLOUD). Jika koneksi putus (timeout 5 detik), ESP32 otomatis memakai logika lokal sendiri (mode LOKAL).
 - **Dashboard web** (Node-RED Dashboard): gauge, grafik, status aktuator, log kejadian, kontrol manual, dan halaman riwayat dari database.
-- **Penyimpanan data** ke MySQL (`sensor_log`, `event_log`).
+- **Penyimpanan data** ke MySQL (`sensor_log`, `event_log`, `telegram_users`).
 - **Bot Telegram**: notifikasi perubahan status, kontrol jarak jauh, dan pendaftaran pengguna dengan persetujuan admin.
 - **WiFiManager**: SSID/password WiFi dan alamat broker diatur lewat portal konfigurasi, tanpa menulis kredensial di firmware.
 
